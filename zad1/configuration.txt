@@ -3,6 +3,6 @@
 20
 PanTadeusz.txt
 15
-1
+2
 2
 15
