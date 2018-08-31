@@ -21,7 +21,7 @@ Zaimplementuj program P+K wątkowy dla P producentów i K konsumentów, działaj
  - praca konsumentów jest analogiczna do pracy producentów (konsument nie zaczyna od początku, szukając pierwszego wyprodukowanego elementu, ale pamięta pozycję, gdzie poprzedni konsument pobrał wartość, co zapewnia równomierną konsumpcję dla całego bufora.
  - Po pobraniu wartości ostatniego elementu tablicy konsument zaczyna cyklicznie pobierać elementy  od początku tablicy.
 
-## Wątki powinny działać w pętli nieskończonej i kończyć się
+Wątki powinny działać w pętli nieskończonej i kończyć się  
 
  - jeśli nk>0, po upływie nk sekund,
  - jeśli nk=0, po przeczytaniu ostatniego wersu pliku tekstowego lub po odebraniu przez proces główny sygnału CTRL-C.
