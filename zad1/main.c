@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-
+#include <signal.h>
 
 FILE* configurationFile;
 bool printInfo = true;
@@ -25,6 +25,7 @@ FILE* fileToRead;
 
 char** buffer;
 int cellsFilled = 0;
+bool writingDone = false;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -32,9 +33,15 @@ pthread_t *producerThreads;
 pthread_t *consumerThreads;
 bool allThreadsCreated = false;
 
-bool canReadBuffer = false;
 
-int* queue;
+typedef struct queueItem
+{
+    int id;
+    int type; //0 - producer, 1 - consumer
+} queueItem;
+
+queueItem* queue;
+int queueIndex = 0;
 
 bool configurationFileOpened = false;
 bool fileToReadOpened = false;
@@ -43,6 +50,7 @@ bool producerThreadsCreated = false;
 bool consumersThreadsCreated = false;
 bool mutexInitialized = false;
 bool queueCreated = false;
+
 
 void printInformation()
 {
@@ -213,46 +221,127 @@ void openAndAnalyzeConfiguratinFile(int argc, char* argv[])
 
 }
 
-long gettid(){
-    return syscall(SYS_gettid);
+void findPlaceInQueue(int id, int type)
+{
+    for(int i = 0; i < (consumers + producers); i++)
+    {
+        if(queue[i].id == -1)
+        {
+            queue[i].id = id;
+            queue[i].type = type;
+            break;
+        }
+    }
 }
 
 void* producerAction(void* arg)
 {  
+
+    int* id = (int*)arg;
+    int producerId = *id;
+
     while(!allThreadsCreated);
 
-    sprintf(info, "Producers starts writing to buffer.\n");
+    sprintf(info, "Producer %d starts writing to buffer.\n", producerId);
     printInformation();
+
+    findPlaceInQueue(producerId, 0);
 
     char* line;
     size_t len = 0;
     while(getline(&line, &len, fileToRead))
     {
+        sleep(1);
+        pthread_mutex_lock(&mutex);
+
+        while(cellsFilled >= bufferSize || queue[queueIndex].id != producerId)
+        {
+            sprintf(info, "p %d wait, filled: %d, id in queue: %d\n", producerId, cellsFilled, queue[queueIndex].id);
+            printInformation();
+            //if buffer is full and next thread is producer
+            if(cellsFilled >= bufferSize && queue[queueIndex].type == 0) 
+            {
+                sprintf(info, "Invite next thread\n");
+                printInformation();
+                queueIndex++;
+                if(queueIndex == consumers + producers)
+                    queueIndex = 0;
+                pthread_cond_broadcast(&cond);
+            }
+            else
+                pthread_cond_wait(&cond, &mutex);
+        }
+
+        queueIndex++;
+        if(queueIndex == consumers + producers)
+            queueIndex = 0;
+
         int position = producerPosition;
         buffer[position] = line;
         cellsFilled++;
-        sprintf(info, "Producers %ld has written \n %sin buffer.\n", gettid(), line);
+        sprintf(info, "Producers %d has written \n %sin buffer [%d].\n", producerId, line, position);
         printInformation();
 
         position++;
-        if(position > bufferSize)
+        if(position == bufferSize)
             position = 0;
 
         producerPosition = position;
+
+        pthread_cond_broadcast(&cond);
+        pthread_mutex_unlock(&mutex);
     }
-    canReadBuffer = true;
-    sprintf(info, "Producers %ld end his work.\n", gettid());
+    writingDone = true;
+    sprintf(info, "Producers %d end his work.\n", producerId);
     printInformation();
     return NULL;
 }
 
 void* consumerAction(void* arg)
 {
+
+    int* id = (int*)arg;
+    int consumerId = *id;
     while(!allThreadsCreated);
 
-    printf("Consumer %ld starts reading from buffer.\n",gettid());
-    while(canReadBuffer && cellsFilled != 0)
+    printf("Consumer %d starts reading from buffer.\n",consumerId);
+    
+    findPlaceInQueue(consumerId, 1);
+
+
+    while(1)
     {
+        if(writingDone && cellsFilled == 0)
+        {
+            break;
+        }
+        sleep(1);
+        pthread_mutex_lock(&mutex);
+
+        while(cellsFilled == 0 || queue[queueIndex].id != consumerId)
+        {
+            sprintf(info,"c %d wait, filled: %d, id in queue: %d\n",consumerId, cellsFilled, queue[queueIndex].id);
+            printInformation();
+            
+            //if buffer is empty and next thread is consumer
+            if(cellsFilled == 0 && queue[queueIndex].type == 1) 
+            {
+                sprintf(info,"Invite next thread\n");
+                printInformation();
+                queueIndex++;
+                if(queueIndex == consumers + producers)
+                    queueIndex = 0;
+                pthread_cond_broadcast(&cond);
+            }
+            else
+                pthread_cond_wait(&cond, &mutex);
+        }
+
+        queueIndex++;
+        if(queueIndex == consumers + producers)
+            queueIndex = 0;
+
+
         bool found = false;
         int position = consumerPosition;
         char* line = buffer[position];
@@ -277,20 +366,39 @@ void* consumerAction(void* arg)
         }
 
         if(found)
-            printf("Consumer %ld has found proper line \n[%d]: %s", gettid(), position, line);
+            printf("Consumer %d has found proper line \n[%d]: %s", consumerId, position, line);
+
+        printf( "c %d read from [%d]: %s\n", consumerId, position, line);
+       
 
         position++;
-        if(position > bufferSize)
+        if(position == bufferSize)
             position = 0;
 
         consumerPosition = position;
+
+        pthread_cond_broadcast(&cond);
+        pthread_mutex_unlock(&mutex);
     }
-    printf("Consumer %ld ends his work.\n", gettid());
+    printf("Consumer %d ends his work.\n", consumerId);
     return NULL;
 }
 
+
+void handleSignal(int sig)
+{
+    printf("\nhandle signal");
+    cleanBeforeExit();
+    exit(0);
+}
+
+
 int main(int argc, char* argv[])
 {
+
+    signal(SIGINT, handleSignal);
+    signal(SIGTSTP, handleSignal);
+
     openAndAnalyzeConfiguratinFile(argc, argv);
 
     buffer = malloc(bufferSize * sizeof(void*));
@@ -324,27 +432,23 @@ int main(int argc, char* argv[])
         exit(1);
     }
 
-    queue = malloc((consumers + producers) * sizeof(int));
+    queue = malloc((consumers + producers) * sizeof(queueItem));
     queueCreated = true;
 
     for(int i = 0; i < producers + consumers; i++)
-        queue[i] = -1;
+        queue[i].id = -1;
 
-    for(int i = 0; i < consumers; i++)
-    {
-        int created = pthread_create(&consumerThreads[i], NULL, consumerAction, NULL);
-        if(created != 0)
-        {
-            sprintf(info, "Error: cannot create consumer thread.\n");
-            printInformation();
-            cleanBeforeExit();
-            exit(1);
-        }
-    }
 
+    int* idTab = malloc(sizeof(int) * (consumers + producers));
+    for(int i = 0; i < producers + consumers; i++)
+        idTab[i] = i;
+
+
+    int idIndex = 0;
     for(int i = 0; i < producers; i++)
     {
-        int created = pthread_create(&producerThreads[i], NULL, producerAction, NULL);
+
+        int created = pthread_create(&producerThreads[i], NULL, producerAction, (void*)&idTab[idIndex]);
         if(created != 0)
         {
             sprintf(info, "Error: cannot create producer thread.\n");
@@ -352,6 +456,21 @@ int main(int argc, char* argv[])
             cleanBeforeExit();
             exit(1);
         }
+        idIndex++;
+    }
+
+
+    for(int i = 0; i < consumers; i++)
+    {
+        int created = pthread_create(&consumerThreads[i], NULL, consumerAction, (void*)&idTab[idIndex]);
+        if(created != 0)
+        {
+            sprintf(info, "Error: cannot create consumer thread.\n");
+            printInformation();
+            cleanBeforeExit();
+            exit(1);
+        }
+        idIndex++;
     }
 
     allThreadsCreated = true;
@@ -379,6 +498,7 @@ int main(int argc, char* argv[])
             exit(1);
         }
     }
+
 
     cleanBeforeExit();
     return 0;
